@@ -7,6 +7,16 @@ const HTTP_PORT = 8003;
 const ROOT = __dirname;
 const ALLOWED_ORIGIN = process.env.ALLOWED_ORIGIN || '*';
 
+// ---- Global safety net ------------------------------------------------------
+// Never let an unhandled error kill the process.
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception (server still running):', err.message);
+});
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled rejection (server still running):', err);
+});
+
 // ---- MIME types -------------------------------------------------------------
 
 const MIME_TYPES = {
@@ -45,6 +55,7 @@ function getMimeType(filePath) {
 
 const RATE_WINDOW_MS = 60_000; // 1 minute
 const RATE_MAX = 30;           // 30 proxy requests per minute per IP
+const MAX_TRACKED_IPS = 10_000;
 const rateBuckets = new Map();  // ip -> [timestamps]
 
 // Clean stale entries every 5 minutes
@@ -61,6 +72,12 @@ function isRateLimited(ip) {
   const now = Date.now();
   let timestamps = rateBuckets.get(ip);
   if (!timestamps) {
+    // Cap tracked IPs to prevent memory exhaustion from botnets
+    if (rateBuckets.size >= MAX_TRACKED_IPS) {
+      // Evict oldest entry
+      const oldest = rateBuckets.keys().next().value;
+      rateBuckets.delete(oldest);
+    }
     timestamps = [];
     rateBuckets.set(ip, timestamps);
   }
@@ -104,118 +121,141 @@ function isBlockedPath(urlPath) {
   return false;
 }
 
+// ---- Safe response helper ---------------------------------------------------
+
+function safeEnd(res, statusCode, body) {
+  try {
+    if (!res.headersSent) {
+      res.writeHead(statusCode, { 'Content-Type': 'text/plain' });
+    }
+    res.end(body);
+  } catch { /* client already gone */ }
+}
+
 // ---- Request handler --------------------------------------------------------
 
 function handleRequest(req, res) {
-  // Only allow GET and OPTIONS
-  if (req.method !== 'GET' && req.method !== 'OPTIONS') {
-    res.writeHead(405, { 'Content-Type': 'text/plain' });
-    res.end('Method Not Allowed');
-    return;
-  }
-
-  // CORS — restrict to our domain (browsers on same origin don't send Origin header, so allow that too)
-  const origin = req.headers['origin'];
-  if (ALLOWED_ORIGIN === '*' || origin === ALLOWED_ORIGIN) {
-    res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
-  if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
-  }
-
-  // ---- API proxy (GET only, whitelisted paths, rate-limited) ----
-  if (req.url.startsWith('/api/')) {
-    const proxyPath = req.url.slice(4); // strip "/api"
-
-    if (!isAllowedProxyPath(proxyPath)) {
-      res.writeHead(403, { 'Content-Type': 'text/plain' });
-      res.end('Forbidden');
+  try {
+    // Only allow GET and OPTIONS
+    if (req.method !== 'GET' && req.method !== 'OPTIONS') {
+      safeEnd(res, 405, 'Method Not Allowed');
       return;
     }
 
-    const clientIP = getClientIP(req);
-    if (isRateLimited(clientIP)) {
-      res.writeHead(429, { 'Content-Type': 'text/plain' });
-      res.end('Too Many Requests');
+    // CORS — restrict to our domain (browsers on same origin don't send Origin header, so allow that too)
+    const origin = req.headers['origin'];
+    if (ALLOWED_ORIGIN === '*' || origin === ALLOWED_ORIGIN) {
+      res.setHeader('Access-Control-Allow-Origin', ALLOWED_ORIGIN);
+    }
+    res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+
+    if (req.method === 'OPTIONS') {
+      res.writeHead(204);
+      res.end();
       return;
     }
 
-    const target = 'https://gamma-api.polymarket.com' + proxyPath;
-    https.get(target, (proxyRes) => {
-      const headers = {
-        'Content-Type': proxyRes.headers['content-type'] || 'application/json',
-      };
-      if (origin === ALLOWED_ORIGIN) {
-        headers['Access-Control-Allow-Origin'] = ALLOWED_ORIGIN;
+    // ---- API proxy (GET only, whitelisted paths, rate-limited) ----
+    if (req.url.startsWith('/api/')) {
+      const proxyPath = req.url.slice(4); // strip "/api"
+
+      if (!isAllowedProxyPath(proxyPath)) {
+        safeEnd(res, 403, 'Forbidden');
+        return;
       }
-      res.writeHead(proxyRes.statusCode, headers);
-      proxyRes.pipe(res);
-    }).on('error', () => {
-      res.writeHead(502, { 'Content-Type': 'text/plain' });
-      res.end('Bad Gateway');
-    });
-    return;
-  }
 
-  // ---- Static file serving ----
-  let urlPath = decodeURIComponent(req.url.split('?')[0]);
+      const clientIP = getClientIP(req);
+      if (isRateLimited(clientIP)) {
+        safeEnd(res, 429, 'Too Many Requests');
+        return;
+      }
 
-  if (urlPath === '/') {
-    urlPath = '/index.html';
-  }
-
-  // Block sensitive files
-  if (isBlockedPath(urlPath)) {
-    res.writeHead(404, { 'Content-Type': 'text/plain' });
-    res.end('Not Found');
-    return;
-  }
-
-  const filePath = path.join(ROOT, urlPath);
-
-  // Prevent directory traversal
-  if (!filePath.startsWith(ROOT)) {
-    res.writeHead(403, { 'Content-Type': 'text/plain' });
-    res.end('Forbidden');
-    return;
-  }
-
-  fs.stat(filePath, (err, stats) => {
-    if (err || !stats.isFile()) {
-      const indexPath = path.join(filePath, 'index.html');
-      fs.stat(indexPath, (err2, stats2) => {
-        if (err2 || !stats2.isFile()) {
-          res.writeHead(404, { 'Content-Type': 'text/plain' });
-          res.end('Not Found');
-          return;
+      const target = 'https://gamma-api.polymarket.com' + proxyPath;
+      const proxyReq = https.get(target, (proxyRes) => {
+        const headers = {
+          'Content-Type': proxyRes.headers['content-type'] || 'application/json',
+        };
+        if (ALLOWED_ORIGIN === '*' || origin === ALLOWED_ORIGIN) {
+          headers['Access-Control-Allow-Origin'] = ALLOWED_ORIGIN;
         }
-        serveFile(indexPath, res);
+        res.writeHead(proxyRes.statusCode, headers);
+        proxyRes.pipe(res);
+        proxyRes.on('error', () => safeEnd(res, 502, 'Bad Gateway'));
+      });
+      proxyReq.on('error', () => safeEnd(res, 502, 'Bad Gateway'));
+      proxyReq.setTimeout(10_000, () => {
+        proxyReq.destroy();
+        safeEnd(res, 504, 'Gateway Timeout');
       });
       return;
     }
-    serveFile(filePath, res);
-  });
+
+    // ---- Static file serving ----
+    let urlPath;
+    try {
+      urlPath = decodeURIComponent(req.url.split('?')[0]);
+    } catch {
+      safeEnd(res, 400, 'Bad Request');
+      return;
+    }
+
+    if (urlPath === '/') {
+      urlPath = '/index.html';
+    }
+
+    // Block sensitive files
+    if (isBlockedPath(urlPath)) {
+      safeEnd(res, 404, 'Not Found');
+      return;
+    }
+
+    const filePath = path.join(ROOT, urlPath);
+
+    // Prevent directory traversal
+    if (!filePath.startsWith(ROOT)) {
+      safeEnd(res, 403, 'Forbidden');
+      return;
+    }
+
+    fs.stat(filePath, (err, stats) => {
+      if (err || !stats.isFile()) {
+        const indexPath = path.join(filePath, 'index.html');
+        fs.stat(indexPath, (err2, stats2) => {
+          if (err2 || !stats2.isFile()) {
+            safeEnd(res, 404, 'Not Found');
+            return;
+          }
+          serveFile(indexPath, res);
+        });
+        return;
+      }
+      serveFile(filePath, res);
+    });
+  } catch (err) {
+    console.error('Request handler error:', err.message);
+    safeEnd(res, 500, 'Internal Server Error');
+  }
 }
 
 function serveFile(filePath, res) {
   const mimeType = getMimeType(filePath);
   const stream = fs.createReadStream(filePath);
 
-  stream.on('error', () => {
-    res.writeHead(500, { 'Content-Type': 'text/plain' });
-    res.end('Internal Server Error');
-  });
+  stream.on('error', () => safeEnd(res, 500, 'Internal Server Error'));
 
   res.writeHead(200, { 'Content-Type': mimeType });
   stream.pipe(res);
 }
 
-// HTTP only — Caddy handles TLS termination
-http.createServer(handleRequest).listen(HTTP_PORT, () => {
+// ---- Start server -----------------------------------------------------------
+
+const server = http.createServer(handleRequest);
+
+// Kill idle connections after 30 seconds, headers must arrive within 10
+server.timeout = 30_000;
+server.headersTimeout = 10_000;
+
+server.listen(HTTP_PORT, () => {
   console.log(`prediction-space running on http://0.0.0.0:${HTTP_PORT}`);
 });
