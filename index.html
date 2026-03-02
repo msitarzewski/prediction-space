@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Prediction Space</title>
+  <style>
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a1a;
+      color: #e0e0e0;
+      font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      overflow: hidden;
+      width: 100vw;
+      height: 100vh;
+    }
+
+    #canvas-container {
+      position: fixed;
+      inset: 0;
+    }
+
+    /* HUD overlay - top left status */
+    #hud {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      z-index: 10;
+      pointer-events: none;
+      font-size: 12px;
+      line-height: 1.6;
+      color: rgba(180, 190, 220, 0.8);
+    }
+    #hud .hud-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: rgba(220, 225, 255, 0.95);
+      margin-bottom: 4px;
+      letter-spacing: 1px;
+    }
+
+    /* Detail panel - bottom center, hidden by default */
+    #detail-panel {
+      position: fixed;
+      bottom: 24px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      background: rgba(12, 12, 30, 0.92);
+      border: 1px solid rgba(100, 120, 200, 0.25);
+      border-radius: 12px;
+      padding: 20px 28px;
+      min-width: 340px;
+      max-width: 420px;
+      max-height: 60vh;
+      overflow-y: auto;
+      backdrop-filter: blur(16px);
+      display: none;
+    }
+    #detail-panel.visible { display: block; }
+
+    #detail-panel .detail-title {
+      font-size: 15px;
+      font-weight: 600;
+      color: #e8ecff;
+      margin-bottom: 12px;
+      line-height: 1.4;
+    }
+
+    #detail-panel .detail-close {
+      position: absolute;
+      top: 10px;
+      right: 14px;
+      cursor: pointer;
+      color: rgba(180, 190, 220, 0.6);
+      font-size: 18px;
+      background: none;
+      border: none;
+      pointer-events: all;
+    }
+    #detail-panel .detail-close:hover { color: #fff; }
+
+    .outcome-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .outcome-name {
+      font-size: 12px;
+      min-width: 60px;
+      color: rgba(200, 210, 240, 0.85);
+    }
+    .outcome-bar-bg {
+      flex: 1;
+      height: 6px;
+      background: rgba(60, 60, 100, 0.5);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .outcome-bar-fill {
+      height: 100%;
+      border-radius: 3px;
+      transition: width 0.4s ease;
+    }
+    .outcome-pct {
+      font-size: 12px;
+      min-width: 36px;
+      text-align: right;
+      color: rgba(200, 210, 240, 0.85);
+    }
+
+    .detail-meta {
+      margin-top: 12px;
+      font-size: 11px;
+      color: rgba(160, 170, 200, 0.7);
+      line-height: 1.7;
+    }
+    .detail-meta a {
+      color: rgba(130, 160, 255, 0.85);
+      text-decoration: none;
+    }
+    .detail-meta a:hover { text-decoration: underline; }
+
+    /* VR button positioning */
+    #VRButton {
+      position: fixed !important;
+      bottom: 20px !important;
+      right: 20px !important;
+    }
+  </style>
+
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <div id="canvas-container"></div>
+
+  <div id="hud">
+    <div class="hud-title">PREDICTION SPACE</div>
+    <div id="hud-markets">Markets: --</div>
+    <div id="hud-update">Last update: --</div>
+    <div id="hud-status">Status: connecting...</div>
+  </div>
+
+  <div id="detail-panel">
+    <button class="detail-close" id="detail-close">&times;</button>
+    <div class="detail-title" id="detail-title"></div>
+    <div id="detail-outcomes"></div>
+    <div class="detail-meta" id="detail-meta"></div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>

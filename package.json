@@ -1,0 +1,10 @@
+{
+  "name": "prediction-space",
+  "version": "1.0.0",
+  "description": "WebXR Polymarket prediction visualization",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "private": true
+}
