@@ -1,5 +1,7 @@
 # Prediction Space
 
+**[Try it live](https://prediction-space.zerologic.com)**
+
 A WebXR visualization of live prediction markets from [Polymarket](https://polymarket.com). Walk through a 3D space of glowing spheres — each one a live market — sized by trading volume, colored by probability, and clustered by category. Built for Apple Vision Pro, Meta Quest, and desktop browsers.
 
 ![Prediction Space](images/screen.png)
